@@ -3,6 +3,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
 USER app
 WORKDIR /app
 EXPOSE 5448
+EXPOSE 5448
 
 # Use the official SDK image for building the application
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
@@ -30,4 +31,3 @@ COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "EInvoice.dll"]
 
 # Configure the application to listen on port 5449 by default
-ENV ASPNETCORE_URLS=http://+:5448
