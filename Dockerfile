@@ -31,4 +31,4 @@ COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "EInvoice.dll"]
 
 # Configure the application to listen on port 5449 by default
-ENV ASPNETCORE_URLS=http://+:5448
+ENV ASPNETCORE_URLS=http://+:5005
