@@ -1,17 +1,38 @@
 ﻿@page "/"
 @using EInvoice.Services
+@using System.Diagnostics
 @inject IJSRuntime JSRuntime
 @rendermode InteractiveServer
 
-
 <h3>E-Fatura -> Excel Converter(Müşteri)</h3>
-
 
 <div class="row">
     <div class="col-md-6">
-        <InputFile Id="fileInput" OnChange="@LoadFiles" multiple class="form-control" accept=".xml"/>
+        <InputFile Id="fileInput" OnChange="@LoadFiles" multiple class="form-control" accept=".xml" />
     </div>
 </div>
+
+@if (isLoading)
+{
+    <div class="spinner-overlay">
+        <div class="spinner-border text-primary" role="status">
+            <span class="sr-only"></span>
+        </div>
+        <div class="mt-2">
+            <p>Yükleniyor: @progressPercentage%</p>
+            <div class="progress" style="width: 50%;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated"
+                role="progressbar"
+                style="width: @progressPercentage%;"
+                aria-valuenow="@progressPercentage"
+                aria-valuemin="0"
+                aria-valuemax="100">
+                    @progressPercentage%
+                </div>
+            </div>
+        </div>
+    </div>
+}
 
 @if (files.Any())
 {
@@ -23,7 +44,7 @@
                 <li class="list-group-item">@file.Name</li>
             }
         </ul>
-        
+
         <button class="btn btn-primary mt-3" @onclick="ConvertFiles">
             Excel'e dönüştür
         </button>
@@ -40,46 +61,125 @@
 @code {
     private List<IBrowserFile> files = new();
     private string errorMessage;
+    private bool isLoading = false;
+    private int progressPercentage = 0;
 
-    private void LoadFiles(InputFileChangeEventArgs e)
+
+    private async Task LoadFiles(InputFileChangeEventArgs e)
     {
-        files = e.GetMultipleFiles().ToList();
-        Console.WriteLine(files.First().Name);
+        isLoading = true;
+        progressPercentage = 0;
         errorMessage = null;
-    }
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
 
-            await JSRuntime.InvokeVoidAsync("customizeFileInput");
+        files = e.GetMultipleFiles(101).ToList();
+
+        if (files.Count > 0)
+        {
+            var semaphore = new SemaphoreSlim(4); // Limit concurrent file reads to 4
+            var stopwatch = new Stopwatch(); // For performance tracking
+            stopwatch.Start();
+
+            var tasks = files.Select(async (file, index) =>
+            {
+                await semaphore.WaitAsync();
+                try
+                {
+                    using var ms = new MemoryStream();
+                    var progress = new Progress<int>(value =>
+                    {
+                        var fileProgress = (double)index / files.Count * 100;
+                        progressPercentage = (int)(fileProgress + value / files.Count);
+                        StateHasChanged();
+                    });
+
+                    var fileStopwatch = Stopwatch.StartNew(); // Track individual file processing
+                    await ReadFileWithProgress(file, ms, progress);
+                    fileStopwatch.Stop();
+
+                    Console.WriteLine($"File: {file.Name} processed in {fileStopwatch.ElapsedMilliseconds} ms");
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            });
+
+            await Task.WhenAll(tasks);
+
+            stopwatch.Stop();
+            Console.WriteLine($"Total processing time for {files.Count} files: {stopwatch.ElapsedMilliseconds} ms");
+        }
+
+        isLoading = false;
     }
+
+    private async Task ReadFileWithProgress(IBrowserFile file, MemoryStream ms, IProgress<int> progress)
+    {
+        var buffer = new byte[81920];
+        var totalBytesRead = 0L;
+        var totalSize = file.Size;
+
+        using var stream = file.OpenReadStream(maxAllowedSize: 2 * 1024 * 1024);
+        int bytesRead;
+        while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+        {
+            await ms.WriteAsync(buffer, 0, bytesRead);
+            totalBytesRead += bytesRead;
+
+            var percentage = (int)((double)totalBytesRead / totalSize * 100);
+            progress.Report(percentage);
+        }
+    }
+
 
     private async Task ConvertFiles()
     {
         try
         {
+            isLoading = true;
+            progressPercentage = 0;
+            int fileIndex = 0;
+
             var formFiles = new List<IFormFile>();
             foreach (var file in files)
             {
+                // Progress for the current file
+                var progress = new Progress<int>(value =>
+                {
+                    // Calculate overall progress
+                    var fileProgress = (double)fileIndex / files.Count * 100;
+                    progressPercentage = (int)(fileProgress + (double)value / files.Count);
+                    StateHasChanged();
+                });
+
                 var ms = new MemoryStream();
-                await file.OpenReadStream(maxAllowedSize: 2*1024*1024).CopyToAsync(ms);
+                await ReadFileWithProgress(file, ms, progress);
                 ms.Position = 0;
-                
+
                 formFiles.Add(new FormFile(ms, 0, ms.Length, file.Name, file.Name));
+                fileIndex++; // Increment file index
             }
 
             CustomerInvoiceConverter customerInvoiceConverter = new();
+
             var excelStream = await customerInvoiceConverter.ConvertToExcel(formFiles);
-            
+            isLoading = false;
+
             // Download the Excel file
-            await JSRuntime.InvokeVoidAsync("downloadFileFromStream", 
-                "converted_files.xlsx", 
+            await JSRuntime.InvokeVoidAsync("downloadFileFromStream",
+                "converted_files.xlsx",
                 excelStream.ToArray());
         }
         catch (Exception ex)
         {
             errorMessage = $"Error converting files: {ex.Message}";
         }
+        finally
+        {
+            isLoading = false;
+        }
     }
+
 }
 <script>
     window.downloadFileFromStream = async (fileName, contentStreamReference) => {
@@ -102,27 +202,26 @@
     }
 </script>
 <style>
-    .label {
-        width: 15rem;
-        height: 2.5rem;
-        border: 2px dashed;
-        border-radius: 5px;
-        display: block;
-        padding: 0.5em;
-        transition: border 300ms ease;
-        cursor: pointer;
+    .spinner-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(255, 255, 255, 0.7);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+    }
+
+    .progress {
+        height: 1.5rem;
+    }
+
+    .progress-bar {
+        line-height: 1.5rem;
         text-align: center;
     }
-    i{
-        display: block;
-        font-size: 42px;
-        padding-bottom: 16px;
-    }
-    
-    .title {
-        transition: 200ms color;
-    }
-    
-    .label:hover {
-        border: 2px solid;
-    }</style>
+</style>

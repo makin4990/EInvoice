@@ -10,7 +10,8 @@ builder.Services.Configure<FormOptions>(options =>
 });
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
-
+builder.Logging.SetMinimumLevel(LogLevel.Debug);
+builder.Logging.AddConsole();
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
